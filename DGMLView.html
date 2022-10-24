@@ -1,0 +1,291 @@
+<html>
+<head>
+<style>
+a:visited { color: blue; }
+.spacer { display: inline-block; width: 1em; text-align:center }
+#nodeSearch {
+  background-image: url('/css/searchicon.png'); /* Add a search icon to input */
+  background-position: 10px 12px; /* Position the search icon */
+  background-repeat: no-repeat; /* Do not repeat the icon image */
+  width: 100%; /* Full-width */
+  font-size: 16px; /* Increase font-size */
+  padding: 12px 20px 12px 40px; /* Add some padding */
+  border: 1px solid #ddd; /* Add a grey border */
+  margin-bottom: 12px; /* Add some space below the input */
+}
+#nodeList {
+  /* Remove default list styling */
+  list-style-type: none;
+  padding: 0;
+  margin: 0;
+}
+#nodeList li a {
+  border: 1px solid #ddd; /* Add a border to all links */
+  margin-top: -1px; /* Prevent double borders */
+  background-color: #f6f6f6; /* Grey background color */
+  padding: 12px; /* Add some padding */
+  text-decoration: none; /* Remove default text underline */
+  font-size: 18px; /* Increase the font-size */
+  color: black; /* Add a black text color */
+  display: block; /* Make it into a block element to fill the whole list */
+}
+#nodeList li a:hover:not(.header) {
+  background-color: #eee; /* Add a hover effect to all links, except for headers */
+}
+</style>
+<title>DGML viewer</title>
+<script src="https://ajax.googleapis.com/ajax/libs/jquery/3.5.1/jquery.min.js"></script>
+<script>
+
+// Handle inputs
+function dropHandler(ev)
+{
+    loadDgml(ev.dataTransfer.files[0])
+    ev.preventDefault();
+}
+
+function dragOverHandler(ev)
+{
+    ev.preventDefault();
+}
+
+function browseHandler()
+{
+    var input = document.createElement('input');
+    input.type = 'file';
+    input.onchange = e => { loadDgml(e.target.files[0]); }
+    input.click();
+}
+
+class Node
+{
+    constructor()
+    {
+        this.name = '';
+        this.to = []; // Nodes this is linked to
+        this.from = []; // Nodes this is linked from
+    }
+}
+
+class DisplayNode
+{
+    constructor()
+    {
+        this.element = null; // DOM element
+        this.children = []; // Child nodes
+    }
+
+    open(childNodes, depth)
+    {
+        let lastElement = this.element;
+        for (const child of childNodes)
+        {
+            let childDisplay = makeDisplayNode(child, depth + 1);
+            this.children.push(childDisplay)
+            childDisplay.element.insertAfter(lastElement);
+            lastElement = childDisplay.element;
+        }
+    }
+
+    close()
+    {
+        for (const child of this.children)
+        {
+            child.close();
+            child.element.remove();
+        }
+        this.children = [];
+    }
+}
+
+// Parse XML
+async function readDgml(file)
+{
+    // Load the dgml
+    const parser = new DOMParser();
+    const dgml = await file.text();
+    const xml = parser.parseFromString(dgml, 'text/xml');
+    const root = xml.getElementsByTagName('DirectedGraph')[0]; // todo make a way to select a graph if there are multiple?
+    
+    // Extract the graph nodes
+    let nodeList = root.getElementsByTagName('Nodes')[0]; // todo warn if there are multiple?
+    let nodes = [];
+    for (const nodeEntry of nodeList.getElementsByTagName('Node'))
+    {
+        const path = nodeEntry.getAttribute('FilePath');
+        if (path) // Only interested in nodes that represent a file
+        {
+            const node = new Node();
+            node.name = nodeEntry.getAttribute('Label');
+            node.id = nodeEntry.getAttribute('Id');
+            node.path = path;
+            nodes[node.id] = node;
+        }
+    }
+
+    // Extract the links
+    let linkList = root.getElementsByTagName('Links')[0]; // todo warn if there are multiple?
+    for (const linkEntry of linkList.getElementsByTagName('Link'))
+    {
+        if (linkEntry.getAttribute('Category') == 'PoundInclude')
+        {
+            let from = nodes[linkEntry.getAttribute('Source')];
+            let to = nodes[linkEntry.getAttribute('Target')];
+            from.to.push(to);
+            to.from.push(from);
+        }
+    }
+
+    return nodes;
+}
+
+function makeDisplayNode(node, depth)
+{
+    let displayNode = new DisplayNode();
+    displayNode.element = $('<span>');
+    displayNode.element.append('&nbsp;&nbsp;&nbsp;&nbsp;'.repeat(depth));   
+
+    let expanderSpan = $('<span class="spacer">')
+    if (node.to.length > 0)
+    {
+        let expander = $('<a href="#"">+</a>');
+        let open = (event) =>
+        {
+            event.preventDefault();
+            expander.text('-');
+            expander.click(close);
+            displayNode.open(node.to, depth);
+        }
+        let close = (event) =>
+        {
+            event.preventDefault();
+            expander.text('+');
+            expander.click(open);
+            displayNode.close();
+        }
+        expander.click(open);
+        expander.appendTo(expanderSpan);
+    }
+    expanderSpan.appendTo(displayNode.element);
+    $('<span>').text(' ' + node.name).appendTo(displayNode.element);
+    $('<br>').appendTo(displayNode.element);
+    return displayNode;
+}
+
+// Main
+async function loadDgml(file)
+{
+    $('#loader').text('Loading...')
+    //try
+    {
+        // Read xml into Nodes
+        let nodes = await readDgml(file);
+        
+        // Sort nodes by name
+        let entries = Object.entries(nodes);
+        entries.sort((a, b) => a[1].name.localeCompare(b[1].name));
+        
+        // Remove the loader
+        $('#dropzone').remove();
+
+        // Create the search bar
+
+        // Make an HTML list of nodes to choose from (from https://www.w3schools.com/howto/howto_js_filter_lists.asp)
+        let nodeSearch = $('<input type="text" id="nodeSearch" placeholder="Search for nodes...">').appendTo('body');
+        let nodeList = $('<ul id="nodeList">').appendTo('body');
+        const maxNodeListLength = 15;
+        let updateNodeList = () =>
+        {
+            // Loop through all list items, and show those that match the search text
+            nodeList.empty();
+            let filter = nodeSearch.val().toUpperCase();
+            let count = 0;
+            for (const [id, node] of entries)
+            {
+                if (node.name.toUpperCase().indexOf(filter) > -1)
+                {
+                    if (count < maxNodeListLength)
+                    {
+                        let nodeItem = $('<li>')
+                        nodeItem.appendTo(nodeList);
+                        let nodeLink = $('<a href="#">').text(node.name).click((event) =>
+                        {
+                            event.preventDefault();
+                            nodeSearch.remove();
+                            nodeList.remove();
+                            let displayNode = makeDisplayNode(node, 0);
+                            displayNode.element.appendTo('body');
+                            displayNode.open(node.to, 0);
+                        });
+                        nodeLink.appendTo(nodeItem);
+                    }
+                    count++;
+                }
+            }
+            if (count > maxNodeListLength)
+            {
+                $('<li>').text('...and ' + (count - maxNodeListLength) + ' more').appendTo(nodeList)
+            }
+        };
+        nodeSearch.keyup(updateNodeList);
+        updateNodeList();
+
+        // 
+        // TEMP - search for paths to hkBase.h
+        //
+
+        // Find headers in Havok
+        let queue = [];
+        let predecessor = {};
+        for (const [id, node] of entries)
+        {
+            if (node.path.indexOf('HavokStartIncludes.h') > -1)
+            {
+                queue.push(node);
+                predecessor[node.id] = null; // sentinel
+            }
+        }
+
+        // Search for things that include headers in Havok
+        while (queue.length)
+        {
+            let current = queue.pop();
+            if (current.path.toUpperCase().indexOf('PHYSICSASSETEDITOR') > -1)
+            {
+                console.log("Path:");
+                while (current != null)
+                {
+                    // log the path
+                    console.log(current.path);
+                    current = predecessor[current.id];
+                }
+                break;
+            }
+            for (const child of current.from)
+            {
+                if (predecessor[child.id] === undefined)
+                {
+                    predecessor[child.id] = current;
+                    queue.push(child);
+                }
+            }
+        }
+    }/*
+    catch (e)
+    {
+        let errorMessage = 'Failed to load dgml: "' + e.toString() + '"';
+        $('#loader').text(errorMessage);
+        console.log(errorMessage);
+    }*/
+}
+
+</script>
+</head>
+<body style="margin:0px; font-family:Arial; font-size:18">
+<div id="dropzone" style="width:100vw; height:100vh; display: table; overflow: hidden;">
+    <div id="loader" style="display: table-cell; text-align: center; vertical-align: middle;" ondrop="dropHandler(event);" ondragover="dragOverHandler(event);">
+        drop a .dgml here or <button style="font-size:18;" onClick="browseHandler()">browse</button>
+    </div>
+</div>
+</body>
+</html>
